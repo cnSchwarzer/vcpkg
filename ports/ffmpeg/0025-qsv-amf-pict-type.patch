@@ -1,0 +1,122 @@
+Subject: [PATCH] 0025-qsv-amf-pict-type
+---
+Index: libavcodec/amfenc.c
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/libavcodec/amfenc.c b/libavcodec/amfenc.c
+--- a/libavcodec/amfenc.c	(revision c7fe7ee8d4dcae510453abedabae53e45135144a)
++++ b/libavcodec/amfenc.c	(revision e67d5454f189b03795abb59981c6174bc107d868)
+@@ -696,6 +696,58 @@
+             break;
+         }
+ 
++        // Override Picture Type for Frame
++        if (avctx->codec->id == AV_CODEC_ID_H264) {
++            switch (frame->pict_type) {
++                case AV_PICTURE_TYPE_I:
++                    AMF_ASSIGN_PROPERTY_INT64(res, surface, AMF_VIDEO_ENCODER_FORCE_PICTURE_TYPE, AMF_VIDEO_ENCODER_PICTURE_TYPE_I);
++                    break;
++                case AV_PICTURE_TYPE_P:
++                    AMF_ASSIGN_PROPERTY_INT64(res, surface, AMF_VIDEO_ENCODER_FORCE_PICTURE_TYPE, AMF_VIDEO_ENCODER_PICTURE_TYPE_P);
++                    break;
++                case AV_PICTURE_TYPE_B:
++                    AMF_ASSIGN_PROPERTY_INT64(res, surface, AMF_VIDEO_ENCODER_FORCE_PICTURE_TYPE, AMF_VIDEO_ENCODER_PICTURE_TYPE_B);
++                    break;
++                case AV_PICTURE_TYPE_S:
++                    AMF_ASSIGN_PROPERTY_INT64(res, surface, AMF_VIDEO_ENCODER_FORCE_PICTURE_TYPE, AMF_VIDEO_ENCODER_PICTURE_TYPE_SKIP);
++                    break;
++                default:
++                    AMF_ASSIGN_PROPERTY_INT64(res, surface, AMF_VIDEO_ENCODER_FORCE_PICTURE_TYPE, AMF_VIDEO_ENCODER_PICTURE_TYPE_NONE);
++                    break;
++            }
++            // Keyframe overrides previous assignment.
++            if (frame->key_frame) {
++                av_log(ctx, AV_LOG_DEBUG, "IDR,AUD,PPS and SPS set - h264\n");
++                AMF_ASSIGN_PROPERTY_INT64(res, surface, AMF_VIDEO_ENCODER_INSERT_SPS, 1);
++                AMF_ASSIGN_PROPERTY_INT64(res, surface, AMF_VIDEO_ENCODER_INSERT_PPS, 1);
++                AMF_ASSIGN_PROPERTY_INT64(res, surface, AMF_VIDEO_ENCODER_FORCE_PICTURE_TYPE, AMF_VIDEO_ENCODER_PICTURE_TYPE_IDR);
++            }
++        } else if (avctx->codec->id == AV_CODEC_ID_HEVC) {
++            switch (frame->pict_type) {
++                case AV_PICTURE_TYPE_I:
++                    AMF_ASSIGN_PROPERTY_INT64(res, surface, AMF_VIDEO_ENCODER_HEVC_FORCE_PICTURE_TYPE, AMF_VIDEO_ENCODER_HEVC_PICTURE_TYPE_I);
++                    break;
++                case AV_PICTURE_TYPE_P:
++                    AMF_ASSIGN_PROPERTY_INT64(res, surface, AMF_VIDEO_ENCODER_HEVC_FORCE_PICTURE_TYPE, AMF_VIDEO_ENCODER_HEVC_PICTURE_TYPE_P);
++                    break;
++                case AV_PICTURE_TYPE_B:
++                    av_log(ctx, AV_LOG_WARNING, "Ignoring B-Frame, unsupported by AMD AMF H.265 Encoder.");
++                    break;
++                case AV_PICTURE_TYPE_S:
++                    AMF_ASSIGN_PROPERTY_INT64(res, surface, AMF_VIDEO_ENCODER_HEVC_FORCE_PICTURE_TYPE, AMF_VIDEO_ENCODER_HEVC_PICTURE_TYPE_SKIP);
++                    break;
++                default:
++                    AMF_ASSIGN_PROPERTY_INT64(res, surface, AMF_VIDEO_ENCODER_HEVC_FORCE_PICTURE_TYPE, AMF_VIDEO_ENCODER_HEVC_PICTURE_TYPE_NONE);
++                    break;
++            }
++            // Keyframe overrides previous assignment.
++            if (frame->key_frame) {
++                av_log(ctx, AV_LOG_DEBUG, "IDR,PPS and SPS set - h265\n");
++                AMF_ASSIGN_PROPERTY_INT64(res, surface, AMF_VIDEO_ENCODER_HEVC_INSERT_HEADER, 1);
++                AMF_ASSIGN_PROPERTY_INT64(res, surface, AMF_VIDEO_ENCODER_HEVC_FORCE_PICTURE_TYPE, AMF_VIDEO_ENCODER_HEVC_PICTURE_TYPE_IDR);
++            }
++        }
++
+         // submit surface
+         res = ctx->encoder->pVtbl->SubmitInput(ctx->encoder, (AMFData*)surface);
+         if (res == AMF_INPUT_FULL) { // handle full queue
+Index: libavcodec/qsvenc.c
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/libavcodec/qsvenc.c b/libavcodec/qsvenc.c
+--- a/libavcodec/qsvenc.c	(revision c7fe7ee8d4dcae510453abedabae53e45135144a)
++++ b/libavcodec/qsvenc.c	(revision e67d5454f189b03795abb59981c6174bc107d868)
+@@ -2365,6 +2365,28 @@
+     return updated;
+ }
+ 
++static int set_sps_pps_encode_ctrl(AVCodecContext *avctx, const AVFrame *frame,
++                               mfxEncodeCtrl *enc_ctrl)
++{
++    mfxExtInsertHeaders *insert_headers = NULL;
++
++    if (frame->key_frame) {
++        av_log(avctx, AV_LOG_DEBUG, "Insert SPS PPS Header because of key_frame == 1\n");
++        insert_headers = av_mallocz(sizeof(*insert_headers));
++        if (!insert_headers)
++            return AVERROR(ENOMEM);
++        insert_headers->Header.BufferId = MFX_EXTBUFF_INSERT_HEADERS;
++        insert_headers->Header.BufferSz = sizeof(*insert_headers);
++        insert_headers->SPS = MFX_CODINGOPTION_ON;
++        insert_headers->PPS = MFX_CODINGOPTION_ON;
++
++        enc_ctrl->ExtParam[enc_ctrl->NumExtParam] = (mfxExtBuffer *)insert_headers;
++        enc_ctrl->NumExtParam++;
++    }
++
++    return 0;
++}
++
+ static int encode_frame(AVCodecContext *avctx, QSVEncContext *q,
+                         const AVFrame *frame)
+ {
+@@ -2434,6 +2456,15 @@
+         if (ret < 0)
+             goto free;
+     }
++
++    if ((avctx->codec_id == AV_CODEC_ID_H264 ||
++         avctx->codec_id == AV_CODEC_ID_H265) &&
++        enc_ctrl && QSV_RUNTIME_VERSION_ATLEAST(q->ver, 1, 34)) {
++        ret = set_sps_pps_encode_ctrl(avctx, frame, enc_ctrl);
++        if (ret < 0)
++            goto free;
++    }
++
+     if ((avctx->codec_id == AV_CODEC_ID_H264 ||
+          avctx->codec_id == AV_CODEC_ID_H265) &&
+          q->skip_frame != MFX_SKIPFRAME_NO_SKIP &&

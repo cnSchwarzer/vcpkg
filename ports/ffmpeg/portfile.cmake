@@ -20,6 +20,7 @@ vcpkg_from_github(
         0015-Fix-xml2-detection.patch
         0020-fix-aarch64-libswscale.patch
         0022-fix-iconv.patch
+        0025-qsv-amf-pict-type.patch
 )
 
 if(SOURCE_PATH MATCHES " ")
@@ -504,7 +505,7 @@ else()
 endif()
 
 if ("qsv" IN_LIST FEATURES)
-    set(OPTIONS "${OPTIONS} --enable-libmfx --enable-encoder=h264_qsv --enable-decoder=h264_qsv")   
+    set(OPTIONS "${OPTIONS} --enable-libmfx --enable-encoder=h264_qsv --enable-decoder=h264_qsv")
 else()
     set(OPTIONS "${OPTIONS} --disable-libmfx")
 endif()
